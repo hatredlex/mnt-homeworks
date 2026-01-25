@@ -1,0 +1,240 @@
+---
+- name: Install Clickhouse
+  hosts: clickhouse
+  become: true
+  handlers:
+    - name: Start clickhouse service
+      become: true
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: restarted
+        enabled: true
+      when: not ansible_check_mode
+  tasks:
+    - block:
+        - name: Get clickhouse distrib
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
+            dest: "./{{ item }}-{{ clickhouse_version }}.rpm"
+          with_items: "{{ clickhouse_packages }}"
+      rescue:
+        - name: Get clickhouse distrib
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
+            dest: "./clickhouse-common-static-{{ clickhouse_version }}.rpm"
+      when: ansible_facts.os_family == "RedHat"
+
+    - name: Install clickhouse packages
+      become: true
+      ansible.builtin.yum:
+        name:
+          - clickhouse-common-static-{{ clickhouse_version }}.rpm
+          - clickhouse-client-{{ clickhouse_version }}.rpm
+          - clickhouse-server-{{ clickhouse_version }}.rpm
+      notify: Start clickhouse service
+      when: ansible_facts.os_family == "RedHat"
+
+    - name: Install prerequisites for ClickHouse repo (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - apt-transport-https
+        update_cache: true
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Add ClickHouse GPG key (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
+          | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+      args:
+        executable: /bin/bash
+        creates: /usr/share/keyrings/clickhouse-keyring.gpg
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Add ClickHouse APT repo (Debian/Ubuntu)
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch={{ ansible_facts.architecture }}] https://packages.clickhouse.com/deb stable main"
+        filename: clickhouse
+        state: present
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Install ClickHouse packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - clickhouse-server
+          - clickhouse-client
+        update_cache: true
+      notify: Start clickhouse service
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Flush handlers
+      meta: flush_handlers
+
+    - name: Create database
+      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+      register: create_db
+      failed_when: create_db.rc != 0 and create_db.rc !=82
+      changed_when: create_db.rc == 0
+
+- name: Install Vector
+  hosts: vector
+  become: true
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: not ansible_check_mode
+    - name: Restart Vector
+      ansible.builtin.systemd:
+        name: vector
+        state: restarted
+      when: not ansible_check_mode
+  tasks:
+    - name: Create vector directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ vector_install_dir }}"
+        - "{{ vector_config_dir }}"
+
+    - name: Create vector data dir
+      ansible.builtin.file:
+        path: "{{ vector_data_dir }}"
+        state: directory
+        owner: "{{ vector_user }}"
+        group: "{{ vector_group }}"
+        mode: "0755"
+
+    - name: Download Vector archive
+      ansible.builtin.get_url:
+        url: "{{ vector_archive_url }}"
+        dest: "/tmp/vector.tar.gz"
+        mode: "0644"
+
+    - name: Extract Vector
+      ansible.builtin.unarchive:
+        src: "/tmp/vector.tar.gz"
+        dest: "{{ vector_install_dir }}"
+        remote_src: true
+        creates: "{{ vector_install_dir }}/vector"
+      when: not ansible_check_mode
+
+    - name: Find vector binary after extract
+      ansible.builtin.find:
+        paths: "{{ vector_install_dir }}"
+        patterns: "vector"
+        file_type: file
+        recurse: true
+      register: vector_bin_find
+
+    - name: Install vector binary
+      ansible.builtin.copy:
+        src: "{{ (vector_bin_find.files | sort(attribute='path'))[-1].path }}"
+        dest: /usr/local/bin/vector
+        mode: "0755"
+        remote_src: true
+      when: not ansible_check_mode
+
+    - name: Deploy Vector config
+      ansible.builtin.template:
+        src: "templates/vector/vector.yaml.j2"
+        dest: "{{ vector_config_dir }}/{{ vector_config_file }}"
+        mode: "0644"
+      notify: Restart Vector
+
+    - name: Create vector systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vector.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Vector
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStartPre=/usr/local/bin/vector validate --config-yaml {{ vector_config_dir }}/{{ vector_config_file }}
+          ExecStart=/usr/local/bin/vector --config-yaml {{ vector_config_dir }}/{{ vector_config_file }}
+          Restart=on-failure
+          RestartSec=2
+          StartLimitIntervalSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart Vector
+
+    - name: Enable and start vector
+      ansible.builtin.systemd:
+        name: vector
+        enabled: true
+        state: started
+      when: not ansible_check_mode
+
+- name: Install LightHouse
+  hosts: lighthouse
+  become: true
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+      when: not ansible_check_mode
+
+  tasks:
+    - name: Install nginx (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: nginx
+        update_cache: true
+        state: present
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Install git (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: git
+        state: present
+        update_cache: true
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Create lighthouse directory
+      ansible.builtin.file:
+        path: "{{ lighthouse_install_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Checkout Lighthouse repo
+      ansible.builtin.git:
+        repo: "https://github.com/VKCOM/lighthouse.git"
+        dest: "{{ lighthouse_install_dir }}"
+        version: "master"
+        force: true
+      when: not ansible_check_mode
+
+    - name: Deploy nginx config for lighthouse
+      ansible.builtin.template:
+        src: "templates/nginx/lighthouse.conf.j2"
+        dest: "/etc/nginx/sites-available/lighthouse.conf"
+        mode: "0644"
+      notify: Reload nginx
+
+    - name: Enable lighthouse site
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/lighthouse.conf"
+        dest: "/etc/nginx/sites-enabled/lighthouse.conf"
+        state: link
+      notify: Reload nginx
+      when: not ansible_check_mode
+
+    - name: Enable and start nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+      when: not ansible_check_mode
