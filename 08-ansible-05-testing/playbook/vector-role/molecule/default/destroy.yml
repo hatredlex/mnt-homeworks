@@ -1,0 +1,69 @@
+---
+- name: Destroy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    fallback_instances: "{{ molecule_yml.platforms | map(attribute='name') | list }}"
+
+  tasks:
+    - name: Check if instance config exists
+      ansible.builtin.stat:
+        path: "{{ molecule_instance_config }}"
+      register: ic_stat
+      changed_when: false
+
+    - name: Read instance config (if exists)
+      ansible.builtin.slurp:
+        src: "{{ molecule_instance_config }}"
+      register: instance_config
+      when: ic_stat.stat.exists
+      changed_when: false
+
+    - name: Parse instances from instance config (safe)
+      ansible.builtin.set_fact:
+        instances_from_config: >-
+          {{
+            (
+              (instance_config.content | b64decode | default(''))
+              | trim
+              | default('[]')
+              | from_yaml
+            ) | default([])
+          }}
+      when: ic_stat.stat.exists
+      changed_when: false
+
+    - name: Ensure instances_from_config is a list
+      ansible.builtin.set_fact:
+        instances_from_config: "{{ instances_from_config if (instances_from_config is sequence) else [] }}"
+      when: ic_stat.stat.exists
+      changed_when: false
+
+    - name: Build instances list for removal
+      ansible.builtin.set_fact:
+        instances: >-
+          {{
+            (
+              (instances_from_config | default([]) | map(attribute='name') | list)
+              if (ic_stat.stat.exists and (instances_from_config | length > 0))
+              else
+              fallback_instances
+            )
+          }}
+      changed_when: false
+
+    - name: Remove containers
+      community.docker.docker_container:
+        name: "{{ item }}"
+        state: absent
+        force_kill: true
+      loop: "{{ instances }}"
+      failed_when: false
+
+    - name: Remove network
+      community.docker.docker_network:
+        name: molecule
+        state: absent
+      failed_when: false

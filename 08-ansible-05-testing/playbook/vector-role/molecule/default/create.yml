@@ -1,0 +1,38 @@
+---
+- name: Create
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create network
+      community.docker.docker_network:
+        name: molecule
+
+    - name: Create containers
+      community.docker.docker_container:
+        name: "{{ item.name }}"
+        image: "{{ item.image }}"
+        command: "{{ item.command | default('sleep infinity') }}"
+        state: started
+        recreate: false
+        pull: true
+        networks:
+          - name: molecule
+      loop: "{{ molecule_yml.platforms }}"
+      register: server
+
+    - name: Create instance config
+      ansible.builtin.copy:
+        dest: "{{ molecule_instance_config }}"
+        mode: "0600"
+        content: |
+          {{ server.results
+             | map(attribute='item')
+             | map('combine', {
+                 'connection': 'community.docker.docker',
+                 'ansible_host': 'localhost',
+                 'user': 'root'
+               })
+             | list
+             | to_yaml }}

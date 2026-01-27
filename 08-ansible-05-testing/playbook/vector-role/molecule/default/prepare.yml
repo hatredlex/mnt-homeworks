@@ -1,0 +1,85 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Install python
+      ansible.builtin.raw: |
+        set -e
+
+        # Ubuntu/Debian
+        if command -v apt-get >/dev/null 2>&1; then
+          command -v python3 >/dev/null 2>&1 && exit 0
+          apt-get update -y
+          apt-get install -y python3
+          exit 0
+        fi
+
+        # RHEL/OracleLinux
+        if command -v dnf >/dev/null 2>&1; then
+          command -v python3 >/dev/null 2>&1 && python3 -V && exit 0 || true
+          dnf install -y python39 || dnf install -y python38 || dnf install -y python3
+          exit 0
+        fi
+
+        if command -v yum >/dev/null 2>&1; then
+          yum install -y python39 || yum install -y python38 || yum install -y python3
+          exit 0
+        fi
+
+        echo "No supported package manager found" >&2
+        exit 1
+      changed_when: false
+
+    - name: Show python version
+      ansible.builtin.raw: |
+        python3 --version || true
+        /usr/bin/python3 --version || true
+      changed_when: false
+
+    - name: Ensure /usr/bin/python3 exists (symlink to existing python3*)
+      ansible.builtin.raw: |
+        set -e
+        if [ ! -x /usr/bin/python3 ]; then
+          P=$(command -v python3 || true)
+          if [ -z "$P" ]; then
+            P=$(ls -1 /usr/bin/python3* 2>/dev/null | head -n1 || true)
+          fi
+          if [ -n "$P" ]; then
+            ln -sf "$P" /usr/bin/python3
+          fi
+        fi
+      changed_when: false
+
+    - name: Debug python paths
+      ansible.builtin.raw: |
+        set -x
+        which python3 || true
+        ls -l /usr/bin/python3* || true
+        python3 --version || true
+      changed_when: false
+
+    - name: Assert we are root
+      ansible.builtin.raw: |
+        id -u
+      register: uid
+      changed_when: false
+      failed_when: uid.stdout | trim != "0"
+
+    - name: Ensure /tmp has correct perms
+      ansible.builtin.raw: |
+        mkdir -p /tmp
+        chmod 1777 /tmp
+        ls -ld /tmp
+      changed_when: false
+
+    - name: Ensure remote tmp dir exists and writable
+      ansible.builtin.raw: |
+        rm -f /tmp/ansible || true
+        mkdir -p /tmp/ansible
+        chmod 1777 /tmp/ansible
+        ls -ld /tmp/ansible
+        touch /tmp/ansible/.write_test
+      changed_when: false

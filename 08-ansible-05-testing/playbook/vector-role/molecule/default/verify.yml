@@ -1,0 +1,31 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check vector binary exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/vector
+      register: vector_bin
+
+    - name: Assert vector binary exists
+      ansible.builtin.assert:
+        that:
+          - vector_bin.stat.exists
+
+    - name: Validate vector config
+      ansible.builtin.command:
+        cmd: /usr/local/bin/vector validate --config-yaml /etc/vector/vector.yaml
+      register: vector_validate
+      changed_when: false
+
+    - name: Assert vector config is valid
+      ansible.builtin.assert:
+        that:
+          - vector_validate.rc == 0
+
+    - name: Check vector process running (when systemd is disabled)
+      ansible.builtin.command: pgrep -x vector
+      register: vector_pgrep
+      changed_when: false
+      failed_when: vector_pgrep.rc != 0
