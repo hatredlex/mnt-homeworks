@@ -1,0 +1,7 @@
+selinux
+lxml
+jmespath
+six==1.17.0
+ansible==4.10.0
+molecule==3.6.1
+molecule-podman==1.1.0

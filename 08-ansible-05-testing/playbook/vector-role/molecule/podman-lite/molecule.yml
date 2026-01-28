@@ -1,0 +1,78 @@
+---
+# Dependency management (download roles/collections)
+dependency:
+  name: galaxy
+  options:
+    ignore-certs: false
+    ignore-errors: false
+    role-file: requirements.yml
+    requirements-file: requirements.yml
+
+driver:
+  name: podman
+
+ansible:
+  cfg:
+    defaults:
+      host_key_checking: false
+    ssh_connection:
+      pipelining: true
+  env:
+    ANSIBLE_FORCE_COLOR: "1"
+    ANSIBLE_LOAD_CALLBACK_PLUGINS: "1"
+
+  executor:
+    backend: ansible-playbook
+    args:
+      ansible_playbook:
+        - --diff
+        - --force-handlers
+      ansible_navigator:
+        - --mode stdout
+        - --pull-policy missing
+        - --execution-environment-image ghcr.io/ansible/community-ansible-dev-tools:latest
+
+  playbooks:
+    create: create.yml
+    converge: converge.yml
+    destroy: destroy.yml
+    cleanup: cleanup.yml
+    prepare: prepare.yml
+    side_effect: side_effect.yml
+    verify: verify.yml
+
+scenario:
+  name: podman-lite
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy
+
+platforms:
+  - name: podman-instance
+    image: ubuntu:22.04
+    pre_build_image: true
+    privileged: true
+    command:
+      - sleep
+      - infinity
+
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        ansible_remote_tmp: /tmp/ansible
+  env:
+    ANSIBLE_ROLES_PATH: "../../../"
+#  config_options:
+#    defaults:
+#      roles_path: "../../../"
+
+verifier:
+  name: ansible

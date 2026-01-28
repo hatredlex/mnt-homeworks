@@ -1,0 +1,43 @@
+---
+- name: Create
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create podman containers
+      containers.podman.podman_container:
+        name: "{{ item.name }}"
+        image: "{{ item.image }}"
+        command: "{{ item.command | default('sleep infinity') }}"
+        state: started
+        recreate: false
+        privileged: "{{ item.privileged | default(false) }}"
+      loop: "{{ molecule_yml.platforms }}"
+      register: server
+
+    - name: Wait until container is running
+      ansible.builtin.command: podman inspect -f '{{"{{"}}.State.Running{{"}}"}}' {{ item.name }}
+      register: running_check
+      changed_when: false
+      retries: 10
+      delay: 1
+      until: running_check.stdout | trim == "true"
+      loop: "{{ molecule_yml.platforms }}"
+
+    - name: Create instance config
+      ansible.builtin.copy:
+        dest: "{{ molecule_instance_config }}"
+        mode: "0600"
+        content: |
+          {{
+            server.results
+            | map(attribute='item')
+            | map('combine', {
+                'ansible_host': 'localhost',
+                'ansible_connection': 'containers.podman.podman',
+                'ansible_user': 'root'
+              })
+            | list
+            | to_yaml
+          }}
